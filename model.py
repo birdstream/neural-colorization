@@ -39,21 +39,26 @@ def generator():
         nn.ReflectionPad2d((40, 40, 40, 40)),
         nn.Conv2d(1,32,(9, 9),(1, 1),(4, 4)),
         nn.BatchNorm2d(32),
-        nn.ReLU(),
+        
+        nn.LeakyReLU(),
         nn.Conv2d(32,64,(3, 3),(2, 2),(1, 1)),
         nn.BatchNorm2d(64),
-        nn.ReLU(),
+        
+        nn.LeakyReLU(),
         nn.Conv2d(64,128,(3, 3),(2, 2),(1, 1)),
         nn.BatchNorm2d(128),
-        nn.ReLU(),
+        
+        nn.LeakyReLU(),
         nn.Sequential( # Sequential,
             LambdaMap(lambda x: x, # ConcatTable,
                 nn.Sequential( # Sequential,
                     nn.Conv2d(128,128,(3, 3)),
                     nn.BatchNorm2d(128),
-                    nn.ReLU(),
+                    
+                    nn.LeakyReLU(),
                     nn.Conv2d(128,128,(3, 3)),
                     nn.BatchNorm2d(128),
+                    
                     ),
                 shave_block(2),
                 ),
@@ -64,9 +69,11 @@ def generator():
                 nn.Sequential( # Sequential,
                     nn.Conv2d(128,128,(3, 3)),
                     nn.BatchNorm2d(128),
-                    nn.ReLU(),
+                    
+                    nn.LeakyReLU(),
                     nn.Conv2d(128,128,(3, 3)),
                     nn.BatchNorm2d(128),
+                    
                     ),
                 shave_block(2),
                 ),
@@ -77,9 +84,11 @@ def generator():
                 nn.Sequential( # Sequential,
                     nn.Conv2d(128,128,(3, 3)),
                     nn.BatchNorm2d(128),
-                    nn.ReLU(),
+                    
+                    nn.LeakyReLU(),
                     nn.Conv2d(128,128,(3, 3)),
                     nn.BatchNorm2d(128),
+                    
                     ),
                 shave_block(2),
                 ),
@@ -90,9 +99,11 @@ def generator():
                 nn.Sequential( # Sequential,
                     nn.Conv2d(128,128,(3, 3)),
                     nn.BatchNorm2d(128),
-                    nn.ReLU(),
+                    
+                    nn.LeakyReLU(),
                     nn.Conv2d(128,128,(3, 3)),
                     nn.BatchNorm2d(128),
+                    
                     ),
                 shave_block(2),
                 ),
@@ -103,9 +114,11 @@ def generator():
                 nn.Sequential( # Sequential,
                     nn.Conv2d(128,128,(3, 3)),
                     nn.BatchNorm2d(128),
-                    nn.ReLU(),
+                    
+                    nn.LeakyReLU(),
                     nn.Conv2d(128,128,(3, 3)),
                     nn.BatchNorm2d(128),
+                    
                     ),
                 shave_block(2),
                 ),
@@ -113,10 +126,12 @@ def generator():
             ),
         nn.ConvTranspose2d(128,64,(3, 3),(2, 2),(1, 1),(1, 1)),
         nn.BatchNorm2d(64),
-        nn.ReLU(),
+        
+        nn.LeakyReLU(),
         nn.ConvTranspose2d(64,32,(3, 3),(2, 2),(1, 1),(1, 1)),
         nn.BatchNorm2d(32),
-        nn.ReLU(),
+        
+        nn.LeakyReLU(),
         nn.Conv2d(32,2,(9, 9),(1, 1),(4, 4)),
         nn.Tanh(),
     )
