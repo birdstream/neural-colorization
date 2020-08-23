@@ -10,6 +10,13 @@ import numpy as np
 from PIL import Image
 from skimage.color import rgb2yuv,yuv2rgb
 import cv2
+import torchvision.transforms as transforms
+import sys
+from matplotlib import pyplot as plt
+from PIL import ImageFilter
+from adam_lrd import Adam_LRD
+
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a GAN based model")
@@ -23,6 +30,11 @@ def parse_args():
                         type=str,
                         default=None,
                         help="Test image location")
+    parser.add_argument("-t2",
+                        "--test_image2",
+                        type=str,
+                        default=None,
+                        help="Test image 2 location")
     parser.add_argument("-c",
                         "--checkpoint_location",
                         type=str,
@@ -77,25 +89,42 @@ def parse_args():
                         type=str,
                         default=None,
                         help="Init weights for generator")
+    parser.add_argument("--d_noise",
+                        type=float,
+                        default=0.01,
+                        help="Discriminator input noise factor")
+    parser.add_argument("--d_disable",
+                        action="store_true",
+                        help="Disable training of discriminator")
+    parser.add_argument("--g_disable",
+                        action="store_true",
+                        help="Disable training of generator")
     args = parser.parse_args()
     return args
 
 # define data generator
 class img_data(data.Dataset):
     def __init__(self, path):
-        files = os.listdir(path)
+        files = (os.listdir(path))
         self.files = [os.path.join(path,x) for x in files]
     def __len__(self):
         return len(self.files)
 
     def __getitem__(self, index):
-        img = Image.open(self.files[index])
+        img = Image.open(self.files[index]).convert("RGB")
+        #transform = transforms.RandomAffine(0,(0.2,0.2),(2,1),resample=Image.BICUBIC)
+        transform = transforms.Compose([
+            #transforms.RandomRotation(20,resample=Image.BICUBIC),
+            transforms.RandomResizedCrop((128,128)),
+            transforms.RandomHorizontalFlip()
+            ])
+        img = transform(img)
+        #img = img.filter(ImageFilter.GaussianBlur(np.random.rand()*2))
         yuv = rgb2yuv(img)
         y = yuv[...,0]-0.5
         u_t = yuv[...,1] / 0.43601035
         v_t = yuv[...,2] / 0.61497538
         return torch.Tensor(np.expand_dims(y,axis=0)),torch.Tensor(np.stack([u_t,v_t],axis=0))
-
 
 args = parse_args()
 if not os.path.exists(os.path.join(args.checkpoint_location,'weights')):
@@ -105,39 +134,66 @@ if not os.path.exists(os.path.join(args.checkpoint_location,'weights')):
 G = generator().cuda(args.gpu)
 
 # define D
-D = models.resnet18(pretrained=False,num_classes=2)
-D.fc = nn.Sequential(nn.Linear(512, 1), nn.Sigmoid())
+D = models.resnet18(pretrained=False)
+#for param in D.parameters():
+#    param.requires_grad = False
+D.fc = nn.Sequential(nn.Linear(2048, 1), nn.Sigmoid())
+D.avgpool = nn.AdaptiveAvgPool2d(2)
 D = D.cuda(args.gpu)
-
 trainset = img_data(args.training_dir)
 params = {'batch_size': args.batch_size,
           'shuffle': True,
           'num_workers': args.num_workers}
 training_generator = data.DataLoader(trainset, **params)
 if args.test_image is not None:
-    test_img = Image.open(args.test_image).convert('RGB').resize((256,256))
+    test_img = Image.open(args.test_image).convert('RGB').resize((512,512))
     test_yuv = rgb2yuv(test_img)
-    test_inf = test_yuv[...,0].reshape(1,1,256,256)
+    test_inf = test_yuv[...,0].reshape(1,1,512,512)
     test_var = Variable(torch.Tensor(test_inf-0.5)).cuda(args.gpu)
+if args.test_image2 is not None:
+    test_img2 = Image.open(args.test_image2).convert('RGB').resize((512,512))
+    test_yuv2 = rgb2yuv(test_img2)
+    test_inf2 = test_yuv2[...,0].reshape(1,1,512,512)
+    test_var2 = Variable(torch.Tensor(test_inf2-0.5)).cuda(args.gpu)
 if args.d_init is not None:
-    D.load_state_dict(torch.load(args.d_init))
+    D.load_state_dict(torch.load(args.d_init,map_location='cuda:0'))
 if args.g_init is not None:
-    G.load_state_dict(torch.load(args.g_init))
-
+    G.load_state_dict(torch.load(args.g_init,map_location='cuda:0'))
+plt.figure('Loss')
+plt.figure('Train')
 # save test image for beginning
 if args.test_image is not None:
     test_res = G(test_var)
     uv=test_res.cpu().detach().numpy()
-    uv[:,0,:,:] *= 0.436
-    uv[:,1,:,:] *= 0.615
-    test_yuv = np.concatenate([test_inf,uv],axis=1).reshape(3,256,256)
+    uv[:,0,:,:] *= 0.43601035
+    uv[:,1,:,:] *= 0.61497538
+    test_yuv = np.concatenate([test_inf,uv],axis=1).reshape(3,512,512)
     test_rgb = yuv2rgb(test_yuv.transpose(1,2,0))
+    im = plt.imshow(test_rgb.clip(min=0,max=1))
+    #plt.show(block=False)
+    #plt.pause(1)
     cv2.imwrite(os.path.join(args.checkpoint_location,'test_init.jpg'),(test_rgb.clip(min=0,max=1)*256)[:,:,[2,1,0]])
+if args.test_image2 is not None:
+    test_res2 = G(test_var2)
+    uv2=test_res2.cpu().detach().numpy()
+    uv2[:,0,:,:] *= 0.43601035
+    uv2[:,1,:,:] *= 0.61497538
+    test_yuv2 = np.concatenate([test_inf2,uv2],axis=1).reshape(3,512,512)
+    test_rgb2 = yuv2rgb(test_yuv2.transpose(1,2,0))
+    im = plt.imshow(np.concatenate([test_rgb.clip(min=0,max=1),test_rgb2.clip(min=0,max=1)]))
 
-i=0
+plt.show(block=False)
+plt.pause(1)
+
+
+i=0; dls=0
+i_n = args.d_noise
+g_loss_history=[]
+d_loss_history=[]
+d_loss = 0
 adversarial_loss = torch.nn.BCELoss()
-optimizer_G = torch.optim.Adam(G.parameters(), lr=args.g_lr, betas=(0.5, 0.999))
-optimizer_D = torch.optim.Adam(D.parameters(), lr=args.d_lr, betas=(0.5, 0.999))
+optimizer_G = Adam_LRD(G.parameters(), lr=args.g_lr, betas=(0.5, 0.999),dropout=0.5)
+optimizer_D = Adam_LRD(D.parameters(), lr=args.d_lr, betas=(0.5, 0.999),dropout=0.5)
 for epoch in range(args.epoch):
     for y, uv in training_generator:
         # Adversarial ground truths
@@ -147,40 +203,89 @@ for epoch in range(args.epoch):
         yvar = Variable(y).cuda(args.gpu)
         uvvar = Variable(uv).cuda(args.gpu)
         real_imgs = torch.cat([yvar,uvvar],dim=1)
+        #real_imgs = real_imgs + ((0.1-np.clip(i*0.00001, 0, 0.1))**0.5) * torch.randn(256,256).cuda(args.gpu)
 
         optimizer_G.zero_grad()
         uvgen = G(yvar)
         # Generate a batch of images
         gen_imgs = torch.cat([yvar.detach(),uvgen],dim=1)
+        #gen_imgs = gen_imgs + ((0.1-np.clip(i*0.00001, 0, 0.1))**0.5) * torch.randn(256,256).cuda(args.gpu)
 
         # Loss measures generator's ability to fool the discriminator
         g_loss_gan = adversarial_loss(D(gen_imgs), valid)
         g_loss = g_loss_gan + args.pixel_loss_weights * torch.mean((uvvar-uvgen)**2)
-        if i%args.g_every==0:
+        g_loss_history.append(g_loss.item())
+        if i%args.g_every==0 and not args.g_disable and g_loss_gan > 0.05 or d_loss < 1.5:
+        #if g_loss_gan.item() > gh:
             g_loss.backward()
             optimizer_G.step()
+        #    gh+=.1*gh
+        #else:
+        #    gh-=.1*gh
 
         optimizer_D.zero_grad()
 
         # Measure discriminator's ability to classify real from generated samples
-        real_loss = adversarial_loss(D(real_imgs), valid)
-        fake_loss = adversarial_loss(D(gen_imgs.detach()), fake)
-        d_loss = (real_loss + fake_loss) / 2
-        d_loss.backward()
-        optimizer_D.step()
+        if not args.d_disable and d_loss > 0.2:
+            real_loss = adversarial_loss(D(real_imgs + i_n**0.5 * torch.randn(128,128).cuda(args.gpu)), valid)
+            fake_loss = adversarial_loss(D((gen_imgs + i_n**0.5 * torch.randn(128,128).cuda(args.gpu)).detach()), fake)
+            d_loss = (real_loss + fake_loss) / 2
+            d_loss.backward()
+            optimizer_D.step()
+        else:
+            real_loss = adversarial_loss(D(real_imgs), valid)
+            fake_loss = adversarial_loss(D((gen_imgs).detach()), fake)
+            d_loss = (real_loss + fake_loss) / 2
+        d_loss_history.append(d_loss.item())
+        if args.test_image is not None and i%args.checkpoint_every==0:
+            test_res = G(test_var)
+            uv=test_res.cpu().detach().numpy()
+            uv[:,0,:,:] *= 0.43601035
+            uv[:,1,:,:] *= 0.61497538
+            test_yuv = np.concatenate([test_inf,uv],axis=1).reshape(3,512,512)
+            test_rgb = yuv2rgb(test_yuv.transpose(1,2,0))
+            im.set_data(test_rgb.clip(min=0,max=1))
+            if args.test_image2 is not None:
+                test_res2 = G(test_var2)
+                uv2=test_res2.cpu().detach().numpy()
+                uv2[:,0,:,:] *= 0.43601035
+                uv2[:,1,:,:] *= 0.61497538
+                test_yuv2 = np.concatenate([test_inf2,uv2],axis=1).reshape(3,512,512)
+                test_rgb2 = yuv2rgb(test_yuv2.transpose(1,2,0))
+                im.set_data(np.concatenate([test_rgb.clip(min=0,max=1),test_rgb2.clip(min=0,max=1)]))
+            #plt.draw()
+            #plt.gcf().canvas.draw_idle()
+            plt.gcf().canvas.start_event_loop(0.001)
+            plt.savefig((os.path.join(args.checkpoint_location,'test_epoch_'+str(epoch)+'_iter_'+str(i)+'.jpg')))
+
         i+=1
+        plt.gcf().canvas.start_event_loop(0.001)
+        print ("Epoch: % 4d: Iter: % 6d [D loss: % 10.5f] [G total loss: % 10.5f] [G GAN loss: % 10.5f] [D Noise: % 1.5f] \r" % (epoch, i, d_loss.item(), g_loss.item(), g_loss_gan.item(), i_n), end='')
         if i%args.checkpoint_every==0:
-            print ("Epoch: %d: [D loss: %f] [G total loss: %f] [G GAN Loss: %f]" % (epoch, d_loss.item(), g_loss.item(), g_loss_gan.item()))
+            print ("\n", end='')
 
             torch.save(D.state_dict(), os.path.join(args.checkpoint_location,'weights','D'+str(epoch)+'.pth'))
             torch.save(G.state_dict(), os.path.join(args.checkpoint_location,'weights','G'+str(epoch)+'.pth'))
-            if args.test_image is not None:
-                test_res = G(test_var)
-                uv=test_res.cpu().detach().numpy()
-                uv[:,0,:,:] *= 0.436
-                uv[:,1,:,:] *= 0.615
-                test_yuv = np.concatenate([test_inf,uv],axis=1).reshape(3,256,256)
-                test_rgb = yuv2rgb(test_yuv.transpose(1,2,0))
-                cv2.imwrite(os.path.join(args.checkpoint_location,'test_epoch_'+str(epoch)+'.jpg'),(test_rgb.clip(min=0,max=1)*256)[:,:,[2,1,0]])
+            plt.figure('Loss')
+            #plt.xlim(0, len(g_loss_history))
+            plt.gcf().clear()
+            plt.subplot(211)
+            plt.plot(g_loss_history)
+            plt.xlabel('Generator')
+            plt.ylim(0, 50)
+            plt.subplot(212)
+            plt.plot(d_loss_history)
+            plt.xlabel('Discriminator')
+            plt.gcf().canvas.draw_idle()
+            plt.gcf().canvas.start_event_loop(0.001)
+            plt.figure('Train')
+            #if args.test_image is not None:
+                #test_res = G(test_var)
+                #uv=test_res.cpu().detach().numpy()
+                #uv[:,0,:,:] *= 0.436
+                #uv[:,1,:,:] *= 0.615
+                #test_yuv = np.concatenate([test_inf,uv],axis=1).reshape(3,256,256)
+                #test_rgb = yuv2rgb(test_yuv.transpose(1,2,0))
+                #cv2.imwrite(os.path.join(args.checkpoint_location,'test_epoch_'+str(epoch)+'_iter_'+str(i)+'.jpg'),(test_rgb.clip(min=0,max=1)*256)[:,:,[2,1,0]])
 torch.save(D.state_dict(), os.path.join(args.checkpoint_location,'D_final.pth'))
 torch.save(G.state_dict(), os.path.join(args.checkpoint_location,'G_final.pth'))
