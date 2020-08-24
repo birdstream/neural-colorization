@@ -188,8 +188,11 @@ plt.pause(1)
 
 i=0; dls=0
 i_n = args.d_noise
+g_loss_gan_history=[]
 g_loss_history=[]
 d_loss_history=[]
+g_onoff=[]
+d_onoff=[]
 d_loss = 0
 adversarial_loss = torch.nn.BCELoss()
 optimizer_G = Adam_LRD(G.parameters(), lr=args.g_lr, betas=(0.5, 0.999),dropout=0.5)
@@ -214,11 +217,20 @@ for epoch in range(args.epoch):
         # Loss measures generator's ability to fool the discriminator
         g_loss_gan = adversarial_loss(D(gen_imgs), valid)
         g_loss = g_loss_gan + args.pixel_loss_weights * torch.mean((uvvar-uvgen)**2)
-        g_loss_history.append(g_loss.item())
-        if i%args.g_every==0 and not args.g_disable and g_loss_gan > 0.05 or d_loss < 1.5:
+        g_loss_gan_history.append(g_loss_gan)
+        g_loss_history.append(g_loss)
+        if i%args.g_every==0 and not args.g_disable and not (g_loss_gan < 0.05 or d_loss > 1.5):
         #if g_loss_gan.item() > gh:
             g_loss.backward()
             optimizer_G.step()
+            g_onoff.append(0)
+        else:
+            g_onoff.append(1)
+            g_temp=g_loss.item()
+            g_loss-=g_loss
+            g_loss.backward()
+            optimizer_G.step()
+            g_loss=g_temp
         #    gh+=.1*gh
         #else:
         #    gh-=.1*gh
@@ -226,17 +238,24 @@ for epoch in range(args.epoch):
         optimizer_D.zero_grad()
 
         # Measure discriminator's ability to classify real from generated samples
-        if not args.d_disable and d_loss > 0.2:
+        if not args.d_disable and not d_loss < 0.2:
             real_loss = adversarial_loss(D(real_imgs + i_n**0.5 * torch.randn(128,128).cuda(args.gpu)), valid)
             fake_loss = adversarial_loss(D((gen_imgs + i_n**0.5 * torch.randn(128,128).cuda(args.gpu)).detach()), fake)
             d_loss = (real_loss + fake_loss) / 2
             d_loss.backward()
             optimizer_D.step()
+            d_onoff.append(0)
         else:
             real_loss = adversarial_loss(D(real_imgs), valid)
             fake_loss = adversarial_loss(D((gen_imgs).detach()), fake)
             d_loss = (real_loss + fake_loss) / 2
-        d_loss_history.append(d_loss.item())
+            d_onoff.append(1)
+            d_temp=d_loss.item()
+            d_loss-=d_loss
+            d_loss.backward()
+            optimizer_D.step()
+            d_loss=d_temp
+        d_loss_history.append(d_loss)
         if args.test_image is not None and i%args.checkpoint_every==0:
             test_res = G(test_var)
             uv=test_res.cpu().detach().numpy()
@@ -260,7 +279,7 @@ for epoch in range(args.epoch):
 
         i+=1
         plt.gcf().canvas.start_event_loop(0.001)
-        print ("Epoch: % 4d: Iter: % 6d [D loss: % 10.5f] [G total loss: % 10.5f] [G GAN loss: % 10.5f] [D Noise: % 1.5f] \r" % (epoch, i, d_loss.item(), g_loss.item(), g_loss_gan.item(), i_n), end='')
+        print ("Epoch: % 4d: Iter: % 6d [D loss: % 10.5f] [G total loss: % 10.5f] [G GAN loss: % 10.5f] [D Noise: % 1.5f] \r" % (epoch, i, d_loss, g_loss, g_loss_gan, i_n), end='')
         if i%args.checkpoint_every==0:
             print ("\n", end='')
 
@@ -269,13 +288,17 @@ for epoch in range(args.epoch):
             plt.figure('Loss')
             #plt.xlim(0, len(g_loss_history))
             plt.gcf().clear()
-            plt.subplot(211)
+            plt.subplot(311)
             plt.plot(g_loss_history)
-            plt.xlabel('Generator')
-            plt.ylim(0, 50)
-            plt.subplot(212)
+            plt.xlabel('Generator g_loss')
+            plt.subplot(312)
+            plt.plot(g_loss_gan_history)
+            plt.plot(g_onoff)
+            plt.xlabel('Generator g_loss_gan')
+            plt.subplot(313)
             plt.plot(d_loss_history)
-            plt.xlabel('Discriminator')
+            plt.plot(d_onoff)
+            plt.xlabel('Discriminator d_loss')
             plt.gcf().canvas.draw_idle()
             plt.gcf().canvas.start_event_loop(0.001)
             plt.figure('Train')
