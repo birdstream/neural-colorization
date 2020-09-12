@@ -171,6 +171,7 @@ if args.test_image is not None:
     test_yuv = np.concatenate([test_inf,uv],axis=1).reshape(3,512,512)
     test_rgb = yuv2rgb(test_yuv.transpose(1,2,0))
     im = plt.imshow(test_rgb.clip(min=0,max=1))
+    plt.xlabel('Fake label smoothing:' + str(args.label_fake))
     #plt.show(block=False)
     #plt.pause(1)
     cv2.imwrite(os.path.join(args.checkpoint_location,'test_init.jpg'),(test_rgb.clip(min=0,max=1)*256)[:,:,[2,1,0]])
