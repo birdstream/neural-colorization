@@ -112,15 +112,10 @@ class img_data(data.Dataset):
 
     def __getitem__(self, index):
         img = Image.open(self.files[index]).convert("RGB")
-        #transform = transforms.RandomAffine(0,(0.2,0.2),(2,1),resample=Image.BICUBIC)
         transform = transforms.Compose([
-            #transforms.RandomRotation(20,resample=Image.BICUBIC),
-            #transforms.RandomResizedCrop((256,256)),
-            #transforms.RandomHorizontalFlip()
             transforms.Resize((256,256),interpolation=3)
             ])
         img = transform(img)
-        #img = img.filter(ImageFilter.GaussianBlur(np.random.rand()*2))
         yuv = rgb2yuv(img)
         y = yuv[...,0]-0.5
         u_t = yuv[...,1] / 0.43601035
@@ -136,8 +131,6 @@ G = generator().cuda(args.gpu)
 
 # define D
 D = models.resnet18(pretrained=False)
-#for param in D.parameters():
-#    param.requires_grad = False
 D.fc = nn.Sequential(nn.Linear(2048, 1), nn.Sigmoid())
 D.avgpool = nn.AdaptiveAvgPool2d(2)
 D = D.cuda(args.gpu)
@@ -172,8 +165,6 @@ if args.test_image is not None:
     test_rgb = yuv2rgb(test_yuv.transpose(1,2,0))
     im = plt.imshow(test_rgb.clip(min=0,max=1))
     plt.xlabel('Fake label smoothing:' + str(args.label_fake))
-    #plt.show(block=False)
-    #plt.pause(1)
     cv2.imwrite(os.path.join(args.checkpoint_location,'test_init.jpg'),(test_rgb.clip(min=0,max=1)*256)[:,:,[2,1,0]])
 if args.test_image2 is not None:
     test_res2 = G(test_var2)
@@ -193,26 +184,12 @@ g_loss_gan_history=[]
 g_loss_history=[]
 d_loss_history=[]
 d_loss=0
+D_rollback=D.state_dict()
 adversarial_loss = torch.nn.BCELoss()
-optimizer_G = Adam_LRD(G.parameters(), lr=args.g_lr, betas=(0.5, 0.999), dropout=0.5)
-#optimizer_D = S(D.parameters(), lr=args.d_lr, betas=(0.5, 0.999),dropout=0.5)
-optimizer_D = Adam_LRD(D.parameters(), lr=args.d_lr, betas=(0.5, 0.999), dropout=0.5)
+optimizer_G = Adam_LRD(G.parameters(), lr=args.g_lr, betas=(0.5, 0.999),dropout=0.5)
+optimizer_D = Adam_LRD(D.parameters(), lr=args.d_lr, betas=(0.5, 0.999),dropout=0.5)
 for epoch in range(args.epoch):
     for y, uv in training_generator:
-        # Adversarial ground truths
-       # valid = Variable(torch.Tensor(y.size(0), 1).fill_(1.0), requires_grad=False).cuda(args.gpu)
-       # fake = Variable(torch.Tensor(y.size(0), 1).fill_(0.0), requires_grad=False).cuda(args.gpu)
-
-       # yvar = Variable(y).cuda(args.gpu)
-       # uvvar = Variable(uv).cuda(args.gpu)
-       # real_imgs = torch.cat([yvar,uvvar],dim=1)
-
-
-       # optimizer_G.zero_grad()
-       # uvgen = G(yvar)
-        # Generate a batch of images
-       # gen_imgs = torch.cat([yvar.detach(),uvgen],dim=1)
-        #gen_imgs = gen_imgs + ((0.1-np.clip(i*0.00001, 0, 0.1))**0.5) * torch.randn(256,256).cuda(args.gpu)
         yvar = Variable(y).cuda(args.gpu)
         uvgen = G(yvar)
         uvvar = Variable(uv).cuda(args.gpu)
@@ -221,19 +198,15 @@ for epoch in range(args.epoch):
         valid = Variable(torch.Tensor(y.size(0), 1).fill_(1.0), requires_grad=False).cuda(args.gpu)
         fake = Variable(torch.Tensor(y.size(0), 1).fill_(args.label_fake), requires_grad=False).cuda(args.gpu)
         if i%args.g_every==0 and not args.g_disable:
-            for a in range (0,1):
-                optimizer_G.zero_grad()
-                g_loss_gan = adversarial_loss(D(gen_imgs), valid)
-                g_loss = g_loss_gan + args.pixel_loss_weights * torch.mean((uvvar-uvgen)**2)
-                g_loss_gan_history.append(g_loss_gan.item())
-                g_loss_history.append(g_loss.item())
-                g_loss.backward()
-                optimizer_G.step()
-                #flip+=1
-                #if flip == 1000:
-                #    setattr(args, 'g_disable', True)
-                #    setattr(args, 'd_disable', False)
-                #    flip = 0
+            optimizer_G.zero_grad()
+            g_loss_gan = adversarial_loss(D(gen_imgs), valid)
+            g_loss = g_loss_gan + args.pixel_loss_weights * torch.mean((uvvar-uvgen)**2)
+            g_loss_gan_history.append(g_loss_gan.item())
+            g_loss_history.append(g_loss.item())
+            g_loss.backward()
+            optimizer_G.step()
+            D.load_state_dict(D_rollback)
+            gen_train=True
 
         else:
             g_loss = 0
@@ -246,15 +219,12 @@ for epoch in range(args.epoch):
             real_loss = adversarial_loss(D(real_imgs), valid)
             fake_loss = adversarial_loss(D((gen_imgs).detach()), fake)
             d_loss = (real_loss + fake_loss) / 2
-            #d_loss = torch.mean((real_loss + fake_loss)**2)
             d_loss_history.append(d_loss.item())
             d_loss.backward()
             optimizer_D.step()
-            #flip+=1
-            #if flip == 10000:
-            #    setattr(args, 'g_disable', False)
-            #    setattr(args, 'd_disable', True)
-            #    flip = 0
+            if gen_train==True:
+                D_rollback=D.state_dict()
+                gen_train=False
         else:
             d_loss = 0
  
@@ -292,7 +262,6 @@ for epoch in range(args.epoch):
             plt.subplot(311)
             plt.plot(g_loss_history)
             plt.xlabel('Generator g_loss')
-            #plt.ylim(0,100)
             plt.subplot(312)
             plt.plot(g_loss_gan_history)
             plt.xlabel('Generator g_loss_gan')
@@ -302,13 +271,6 @@ for epoch in range(args.epoch):
             plt.gcf().canvas.draw_idle()
             plt.gcf().canvas.start_event_loop(0.001)
             plt.figure('Train')
-            #if args.test_image is not None:
-                #test_res = G(test_var)
-                #uv=test_res.cpu().detach().numpy()
-                #uv[:,0,:,:] *= 0.436
-                #uv[:,1,:,:] *= 0.615
-                #test_yuv = np.concatenate([test_inf,uv],axis=1).reshape(3,256,256)
-                #test_rgb = yuv2rgb(test_yuv.transpose(1,2,0))
-                #cv2.imwrite(os.path.join(args.checkpoint_location,'test_epoch_'+str(epoch)+'_iter_'+str(i)+'.jpg'),(test_rgb.clip(min=0,max=1)*256)[:,:,[2,1,0]])
+
 torch.save(D.state_dict(), os.path.join(args.checkpoint_location,'D_final.pth'))
 torch.save(G.state_dict(), os.path.join(args.checkpoint_location,'G_final.pth'))
