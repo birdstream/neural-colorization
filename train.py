@@ -8,7 +8,7 @@ from torch.utils import data
 from model import generator
 import numpy as np
 from PIL import Image, ImageStat
-from skimage.color import rgb2yuv,yuv2rgb
+from skimage.color import rgb2yuv,yuv2rgb,rgb2hsv
 import cv2
 import torchvision.transforms as transforms
 import sys
@@ -126,6 +126,9 @@ def parse_args():
                         type=int,
                         default=224,
                         help="Resolution")
+    parser.add_argument("--train-part",
+                        action="store_true",
+                        help="Train only part of network")
     args = parser.parse_args()
     return args
 
@@ -133,12 +136,13 @@ args = parse_args()
 if not os.path.exists(os.path.join(args.checkpoint_location,'weights')):
     os.makedirs(os.path.join(args.checkpoint_location,'weights'))
 
-rng = np.random.default_rng()
+
 # define data generator
 class img_data(data.Dataset):
     def __init__(self, path):
         files = (os.listdir(path))
         self.files = [os.path.join(path,x) for x in files[:args.images]]
+
     def __len__(self):
         return len(self.files)
 
@@ -148,7 +152,7 @@ class img_data(data.Dataset):
             transforms.Resize((args.res,args.res),interpolation=3)
             ])
         img = transform(img)
-        if np.max(rgb2yuv(img)[...,1:3]) <= 0.05 and np.min(rgb2yuv(img)[...,1:3]) >= -0.05:
+        if np.median(rgb2hsv(img)[...,1]) < 0.1:
             img = Image.new('RGB',(args.res, args.res),color = 0)
         yuv = rgb2yuv(img)
         y = yuv[...,0]-0.5
@@ -161,8 +165,18 @@ class img_data(data.Dataset):
 # Define G, same as torch version
 G = generator().cuda(args.gpu)
 
+if args.train_part
+    for param in G.parameters():
+        param.requires_grad = False
+    for param in G[10:15].parameters():
+        param.requires_grad = True
+
 # define D
 D = models.resnet18(pretrained=False)
+
+if args.train_part
+    for param in D.parameters():
+        param.requires_grad = False
 D.fc = nn.Sequential(nn.Linear(2048, 1), nn.Sigmoid())
 D.avgpool = nn.AdaptiveAvgPool2d(2)
 D = D.cuda(args.gpu)
@@ -211,12 +225,11 @@ plt.show(block=False)
 plt.pause(1)
 
 
-i=0
-g_loss_gan_history=[]
-g_loss_history=[]
-d_loss_history=[]
-d_loss=0
-#D_rollback=D.state_dict()
+i = 0
+g_loss_gan_history = []
+g_loss_history = []
+d_loss_history = []
+d_loss = 0
 adversarial_loss = torch.nn.BCELoss()
 optimizer_G = Adam_LRD(G.parameters(), lr=args.g_lr, betas=(0.5, 0.999),dropout=0.5)
 optimizer_D = Adam_LRD(D.parameters(), lr=args.d_lr, betas=(0.5, 0.999),dropout=0.5)
@@ -226,12 +239,12 @@ torch.backends.cudnn.benchmark = True
 for run in range(args.runs):
     trainset = img_data(args.training_dir)
     params = {'batch_size': args.batch_size,
-              'shuffle': False,
+              'shuffle': True,
               'num_workers': args.num_workers,
               'pin_memory': True}
     training_generator = data.DataLoader(trainset, **params)
     for epoch in range(args.epoch):
-        for y, uv in training_generator:
+        for y, uv, in training_generator:
             yvar = Variable(y).cuda(args.gpu)
             uvgen = G(yvar)
             uvvar = Variable(uv).cuda(args.gpu)
@@ -308,6 +321,7 @@ for run in range(args.runs):
 
                 torch.save(D.state_dict(), os.path.join(args.checkpoint_location,'weights','D'+str(epoch)+'.pth'))
                 torch.save(G.state_dict(), os.path.join(args.checkpoint_location,'weights','G'+str(epoch)+'.pth'))
+                torch.save(G.state_dict(), os.path.join('model.pth'))
                 plt.figure('Loss')
                 plt.gcf().clear()
                 plt.subplot(311)
