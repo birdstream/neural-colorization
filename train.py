@@ -14,8 +14,9 @@ import torchvision.transforms as transforms
 import sys
 from matplotlib import pyplot as plt
 from PIL import ImageFilter
-from adam_lrd import Adam_LRD
+import adabound as optim
 import curses
+from unet import UNet
 
 def keypress(stdscr):
     stdscr.nodelay(True)
@@ -104,7 +105,7 @@ def parse_args():
                         help="Set fake label value")
     parser.add_argument("--label_real",
                         type=float,
-                        default=1.0,
+                        default=1,
                         help="Set real label value")
     parser.add_argument("--smooth",
                         type=float,
@@ -129,6 +130,9 @@ def parse_args():
     parser.add_argument("--train-part",
                         action="store_true",
                         help="Train only part of network")
+    parser.add_argument("--nogan",
+                        action="store_true",
+                        help="Dont use GAN")
     args = parser.parse_args()
     return args
 
@@ -136,7 +140,16 @@ args = parse_args()
 if not os.path.exists(os.path.join(args.checkpoint_location,'weights')):
     os.makedirs(os.path.join(args.checkpoint_location,'weights'))
 
-
+class AddGaussianNoise(object):
+    def __init__(self, mean=0., std=1.):
+        self.std = std
+        self.mean = mean
+        
+    def __call__(self, tensor):
+        return tensor + torch.randn(tensor.size()) * self.std + self.mean
+    
+    def __repr__(self):
+        return self.__class__.__name__ + '(mean={0}, std={1})'.format(self.mean, self.std)
 # define data generator
 class img_data(data.Dataset):
     def __init__(self, path):
@@ -148,14 +161,21 @@ class img_data(data.Dataset):
 
     def __getitem__(self, index):
         img = Image.open(self.files[index]).convert('RGB')
+        min_size = min(img.size)
         transform = transforms.Compose([
-            transforms.Resize((args.res,args.res),interpolation=3)
+            transforms.CenterCrop(min_size),
+            transforms.Resize(args.res),
+            transforms.RandomHorizontalFlip()
+#            transforms.ToTensor(),
+#            AddGaussianNoise(0.,0.1),
+#            transforms.ToPILImage()
             ])
         img = transform(img)
-        if np.median(rgb2hsv(img)[...,1]) < 0.1:
-            img = Image.new('RGB',(args.res, args.res),color = 0)
+#        img = np.array(transform(img))
+#        if np.median(rgb2hsv(img)[...,1]) < 0.1:
+#            img = Image.new('RGB',(args.res, args.res),color = 0)
         yuv = rgb2yuv(img)
-        y = yuv[...,0]-0.5
+        y = yuv[...,0]-0.5 + np.random.normal(0,1)
         u_t = yuv[...,1] / 0.43601035
         v_t = yuv[...,2] / 0.61497538
         return torch.Tensor(np.expand_dims(y,axis=0)),torch.Tensor(np.stack([u_t,v_t],axis=0))
@@ -163,42 +183,47 @@ class img_data(data.Dataset):
 
 
 # Define G, same as torch version
-G = generator().cuda(args.gpu)
+#
+G = UNet(1, 2).cuda(args.gpu)
 
-if args.train_part
-    for param in G.parameters():
-        param.requires_grad = False
-    for param in G[10:15].parameters():
-        param.requires_grad = True
+#if args.train_part:
+#    for param in G.parameters():
+#        param.requires_grad = False
+#    for param in G[15:].parameters():
+#        param.requires_grad = True
 
 # define D
-D = models.resnet18(pretrained=False)
+if not args.nogan:
+    D = models.resnet18(pretrained=False)
 
-if args.train_part
-    for param in D.parameters():
-        param.requires_grad = False
-D.fc = nn.Sequential(nn.Linear(2048, 1), nn.Sigmoid())
-D.avgpool = nn.AdaptiveAvgPool2d(2)
-D = D.cuda(args.gpu)
+    if args.train_part:
+        for param in D.parameters():
+            param.requires_grad = False
+    D.fc = nn.Sequential(nn.Linear(2048, 1), nn.Sigmoid())
+    D.avgpool = nn.AdaptiveAvgPool2d(2)
+    D = D.cuda(args.gpu)
 #trainset = img_data(args.training_dir)
 #params = {'batch_size': args.batch_size,
 #          'shuffle': True,
 #          'num_workers': args.num_workers}
 #training_generator = data.DataLoader(trainset, **params)
 if args.test_image is not None:
-    test_img = Image.open(args.test_image).convert('RGB').resize((512,512))
+    test_img = Image.open(args.test_image)
+    test_img.thumbnail((args.res,args.res))
+    W, H = test_img.size
+    test_img.convert("RGB")
     test_yuv = rgb2yuv(test_img)
-    test_inf = test_yuv[...,0].reshape(1,1,512,512)
+    test_inf = test_yuv[...,0].reshape(1,1,H,W)
     test_var = Variable(torch.Tensor(test_inf-0.5)).cuda(args.gpu)
 if args.test_image2 is not None:
-    test_img2 = Image.open(args.test_image2).convert('RGB').resize((512,512))
+    test_img2 = Image.open(args.test_image2).convert('RGB')
     test_yuv2 = rgb2yuv(test_img2)
-    test_inf2 = test_yuv2[...,0].reshape(1,1,512,512)
+    test_inf2 = test_yuv2[...,0].reshape(1,1,args.res,args.res)
     test_var2 = Variable(torch.Tensor(test_inf2-0.5)).cuda(args.gpu)
 if args.d_init is not None:
     D.load_state_dict(torch.load(args.d_init,map_location='cuda:0'))
 if args.g_init is not None:
-    G.load_state_dict(torch.load(args.g_init,map_location='cuda:0'), strict=False)
+    G.load_state_dict(torch.load(args.g_init,map_location='cuda:0'))
 plt.figure('Loss')
 plt.figure('Train')
 # save test image for beginning
@@ -207,7 +232,7 @@ if args.test_image is not None:
     uv=test_res.cpu().detach().numpy()
     uv[:,0,:,:] *= 0.43601035
     uv[:,1,:,:] *= 0.61497538
-    test_yuv = np.concatenate([test_inf,uv],axis=1).reshape(3,512,512)
+    test_yuv = np.concatenate([test_inf,uv],axis=1).reshape(3,H,W)
     test_rgb = yuv2rgb(test_yuv.transpose(1,2,0))
     im = plt.imshow(test_rgb.clip(min=0,max=1))
     plt.xlabel('Fake label smoothing:' + str(args.label_fake) + '\n Real label smoothing:' + str(args.label_real))
@@ -217,7 +242,7 @@ if args.test_image2 is not None:
     uv2=test_res2.cpu().detach().numpy()
     uv2[:,0,:,:] *= 0.43601035
     uv2[:,1,:,:] *= 0.61497538
-    test_yuv2 = np.concatenate([test_inf2,uv2],axis=1).reshape(3,512,512)
+    test_yuv2 = np.concatenate([test_inf2,uv2],axis=1).reshape(3,args.res,args.res)
     test_rgb2 = yuv2rgb(test_yuv2.transpose(1,2,0))
     im = plt.imshow(np.concatenate([test_rgb.clip(min=0,max=1),test_rgb2.clip(min=0,max=1)]))
 
@@ -230,9 +255,11 @@ g_loss_gan_history = []
 g_loss_history = []
 d_loss_history = []
 d_loss = 0
-adversarial_loss = torch.nn.BCELoss()
-optimizer_G = Adam_LRD(G.parameters(), lr=args.g_lr, betas=(0.5, 0.999),dropout=0.5)
-optimizer_D = Adam_LRD(D.parameters(), lr=args.d_lr, betas=(0.5, 0.999),dropout=0.5)
+g_loss_gan = 0
+adversarial_loss = nn.BCELoss()
+optimizer_G = optim.AdaBound(G.parameters(),betas=(0.1,0.999), lr=args.g_lr)
+if not args.nogan:
+    optimizer_D = optim.AdaBound(D.parameters(),betas=(0.1,0.999), lr=args.d_lr)
 Loss = nn.MSELoss()
 rng = np.random.default_rng()
 torch.backends.cudnn.benchmark = True
@@ -248,20 +275,22 @@ for run in range(args.runs):
             yvar = Variable(y).cuda(args.gpu)
             uvgen = G(yvar)
             uvvar = Variable(uv).cuda(args.gpu)
-            gen_imgs = torch.cat([yvar.detach(),uvgen],dim=1)
-            real_imgs = torch.cat([yvar,uvvar],dim=1)
-            valid = Variable(torch.Tensor(y.size(0), 1).fill_(args.label_real), requires_grad=False).cuda(args.gpu)
-            fake = Variable(torch.Tensor(y.size(0), 1).fill_(args.label_fake), requires_grad=False).cuda(args.gpu)
+            if not args.nogan:
+                gen_imgs = torch.cat([yvar.detach(),uvgen],dim=1)
+                real_imgs = torch.cat([yvar,uvvar],dim=1)
+                valid = Variable(torch.Tensor(y.size(0), 1).fill_(args.label_real), requires_grad=False).cuda(args.gpu)
+                fake = Variable(torch.Tensor(y.size(0), 1).fill_(args.label_fake), requires_grad=False).cuda(args.gpu)
             if i%args.g_every==0 and not args.g_disable:
-                #optimizer_G.zero_grad()
-                for param in G.parameters():
-                    param.grad = None
-                g_loss_gan = adversarial_loss(D(gen_imgs), valid)
-                g_loss = g_loss_gan + args.pixel_loss_weights * Loss(uvgen, uvvar)
-                g_loss_gan_history.append(g_loss_gan.item())
+                optimizer_G.zero_grad(set_to_none=True)                
+                if not args.nogan:
+                    g_loss_gan = adversarial_loss(D(gen_imgs), valid) / args.pixel_loss_weights
+                g_loss = g_loss_gan + Loss(uvgen, uvvar)
+                if not args.nogan:
+                    g_loss_gan_history.append(g_loss_gan.item())
                 g_loss_history.append(g_loss.item())
                 g_loss.backward()
                 optimizer_G.step()
+
                 #D.load_state_dict(D_rollback)
                 #gen_train=True
 
@@ -271,9 +300,7 @@ for run in range(args.runs):
 
 
             if not args.d_disable:
-                #optimizer_D.zero_grad()
-                for param in D.parameters():
-                    param.grad = None
+                optimizer_D.zero_grad(set_to_none=True)
                 # Measure discriminator's ability to classify real from generated samples
                 if rng.random() > args.flip:
                     real_loss = adversarial_loss(D(real_imgs), valid - args.smooth)
@@ -296,7 +323,7 @@ for run in range(args.runs):
                 uv=test_res.cpu().detach().numpy()
                 uv[:,0,:,:] *= 0.43601035
                 uv[:,1,:,:] *= 0.61497538
-                test_yuv = np.concatenate([test_inf,uv],axis=1).reshape(3,512,512)
+                test_yuv = np.concatenate([test_inf,uv],axis=1).reshape(3,H,W)
                 test_rgb = yuv2rgb(test_yuv.transpose(1,2,0))
                 im.set_data(test_rgb.clip(min=0,max=1))
                 if args.test_image2 is not None:
@@ -318,8 +345,8 @@ for run in range(args.runs):
             print ("Epoch: % 4d: Iter: % 6d [D loss: % 10.5f] [G total loss: % 10.5f] [G GAN loss: % 10.5f] \r" % (epoch, i, d_loss, g_loss, g_loss_gan), end='')
             if i%args.checkpoint_every==0 or not key == -1:
                 print ("\n", end='')
-
-                torch.save(D.state_dict(), os.path.join(args.checkpoint_location,'weights','D'+str(epoch)+'.pth'))
+                if not args.nogan:
+                    torch.save(D.state_dict(), os.path.join(args.checkpoint_location,'weights','D'+str(epoch)+'.pth'))
                 torch.save(G.state_dict(), os.path.join(args.checkpoint_location,'weights','G'+str(epoch)+'.pth'))
                 torch.save(G.state_dict(), os.path.join('model.pth'))
                 plt.figure('Loss')
@@ -336,6 +363,7 @@ for run in range(args.runs):
                 plt.gcf().canvas.draw_idle()
                 plt.gcf().canvas.start_event_loop(0.001)
                 plt.figure('Train')
-
-    torch.save(D.state_dict(), os.path.join(args.checkpoint_location,'D_final.pth'))
+    if not args.nogan:
+        torch.save(D.state_dict(), os.path.join(args.checkpoint_location,'D_final.pth'))
     torch.save(G.state_dict(), os.path.join(args.checkpoint_location,'G_final.pth'))
+
