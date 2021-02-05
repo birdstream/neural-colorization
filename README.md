@@ -4,6 +4,9 @@
 ![Environment](https://img.shields.io/badge/python-3.6-blue.svg)
 ![License](https://img.shields.io/github/license/zeruniverse/QQRobot.svg)
 
+## Warning! this readme.md is severely outdated (maybe i'll fix it, some day ;))
+There are more arguments added etc, look in the code :)
+
 GAN for image colorization based on [Johnson's network structure](https://github.com/jcjohnson/fast-neural-style).
 
 ![Result](https://cloud.githubusercontent.com/assets/4648756/20504440/4067e0f6-affc-11e6-88e7-26de6f5c1cce.jpg)
