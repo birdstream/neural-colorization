@@ -1,129 +1,85 @@
-import os 
-baseLoc = os.path.dirname(os.path.realpath(__file__))+'/'
-
-
-from gimpfu import *
-import sys
-
-sys.path.extend([baseLoc+'gimpenv/lib/python2.7',baseLoc+'gimpenv/lib/python2.7/site-packages',baseLoc+'gimpenv/lib/python2.7/site-packages/setuptools',baseLoc+'neural-colorization'])
-
-
 import torch
 from model import generator
 from torch.autograd import Variable
 from scipy.ndimage import zoom
-from PIL import Image
-from argparse import Namespace
-import numpy as np
-# from skimage.color import rgb2yuv,yuv2rgb
 import cv2
+import os
+from PIL import Image
+import argparse
+import numpy as np
+from skimage.color import rgb2yuv,yuv2rgb
+from unet import UNet
 
-#def white_balance(img):
-#    result = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-#    avg_a = np.average(result[:, :, 1])
-#    avg_b = np.average(result[:, :, 2])
-#    result[:, :, 1] = result[:, :, 1] - ((avg_a - 128) * (result[:, :, 0] / 255.0) * 1.1)
-#    result[:, :, 2] = result[:, :, 2] - ((avg_b - 128) * (result[:, :, 0] / 255.0) * 1.1)
-#    result = cv2.cvtColor(result, cv2.COLOR_LAB2BGR)
-#    return result
+def parse_args():
+    parser = argparse.ArgumentParser(description="Colorize images")
+    parser.add_argument("-i",
+                        "--input",
+                        type=str,
+                        required=True,
+                        help="input image/input dir")
+    parser.add_argument("-o",
+                        "--output",
+                        type=str,
+                        required=True,
+                        help="output image/output dir")
+    parser.add_argument("-m",
+                        "--model",
+                        type=str,
+                        required=True,
+                        help="location for model (Generator)")
+    parser.add_argument("--gpu",
+                        type=int,
+                        default=-1,
+                        help="which GPU to use? [-1 for cpu]")
+    parser.add_argument("--res",
+                        type=int,
+                        default=256,
+                        help="Color resolution (default: 256)")
+    args = parser.parse_args()
+    return args
 
-def getcolor(input_image):
-    p = np.array(Image.fromarray(input_image,"RGB").convert("L").convert("RGB"))
-    #p = np.repeat(input_image_gray, 3, axis=2)
+args = parse_args()
 
-    if torch.cuda.is_available():
-        g_available=1
-    else:
-        g_available=-1
+#G = generator()
+G = UNet(1, 2)
+if torch.cuda.is_available():
+# args.gpu>=0:
+    G=G.cuda(args.gpu)
+    G.load_state_dict(torch.load(args.model))
+else:
+    G.load_state_dict(torch.load(args.model,map_location=torch.device('cpu')))
 
-    args=Namespace(model=baseLoc+'neural-colorization/model.pth',gpu=g_available)
-
-    G = generator()
-
-    if torch.cuda.is_available():
-        G=G.cuda()
-        G.load_state_dict(torch.load(args.model))
-    else:
-        G.load_state_dict(torch.load(args.model,map_location=torch.device('cpu')))
-
-    p = p.astype(np.float32)
-    p = p / 255
-    img_yuv = cv2.cvtColor(p, cv2.COLOR_RGB2YUV)
-    img_yuv_512= cv2.resize(img_yuv, dsize=(512, 512), interpolation=cv2.INTER_AREA)
-    # img_yuv = rgb2yuv(p)
-    H,W,_ = img_yuv.shape
+def inference(G,in_path,out_path):
+    p=Image.open(in_path).convert('RGB')
+    W, H = p.size
+    dest_yuv = rgb2yuv(p)
+    dest_img = np.expand_dims(np.expand_dims(dest_yuv[...,0], axis=0), axis=0)
+    p.thumbnail((args.res,args.res))
+    img_yuv = rgb2yuv(p)
+    #H,W,_ = img_yuv.shape
+    
+    print('size:' + str((p.size)))
     infimg = np.expand_dims(np.expand_dims(img_yuv[...,0], axis=0), axis=0)
-    infimg_512 = np.expand_dims(np.expand_dims(img_yuv_512[...,0], axis=0), axis=0)
-    img_variable = Variable(torch.Tensor(infimg_512-0.5))
+    img_variable = Variable(torch.Tensor(infimg-0.5))
     if args.gpu>=0:
         img_variable=img_variable.cuda(args.gpu)
     res = G(img_variable)
-    uv=res.cpu().detach().numpy()
-    uv[:,0,:,:] *= 0.43601035
-    uv[:,1,:,:] *= 0.61497538
+    uv = res.cpu().detach().numpy()
+    uv[:,0,:,:] *= 0.436
+    uv[:,1,:,:] *= 0.615
     (_,_,H1,W1) = uv.shape
-    uv = zoom(uv,(1,1,float(H)/H1,float(W)/W1))
-    yuv = np.concatenate([infimg,uv],axis=1)[0]
-    # rgb=yuv2rgb(yuv.transpose(1,2,0))
-    # out=(rgb.clip(min=0,max=1)*255)[:,:,[0,1,2]]
-    rgb = cv2.cvtColor(yuv.transpose(1, 2, 0)*255, cv2.COLOR_YUV2RGB)
-    rgb = rgb.clip(min=0,max=255)
-    out = rgb.astype(np.uint8)
-    #out = white_balance(out)
+    print('size out:' + str((W1,H1)))
+    uv = zoom(uv,(1,1,H/H1,W/W1))
+    yuv = np.concatenate([dest_img,uv],axis=1)[0]
+    rgb=yuv2rgb(yuv.transpose(1,2,0))
+    cv2.imwrite(out_path,(rgb.clip(min=0,max=1)*256)[:,:,[2,1,0]])
 
-    return out
 
-def channelData(layer):#convert gimp image to numpy
-    region=layer.get_pixel_rgn(0, 0, layer.width,layer.height)
-    pixChars=region[:,:] # Take whole layer
-    bpp=region.bpp
-    # return np.frombuffer(pixChars,dtype=np.uint8).reshape(len(pixChars)/bpp,bpp)
-    return np.frombuffer(pixChars,dtype=np.uint8).reshape(layer.height,layer.width,bpp)
+if not os.path.isdir(args.input):
+    inference(G,args.input,args.output)
+else:
+    if not os.path.exists(args.output):
+        os.makedirs(args.output)
+    for f in os.listdir(args.input):
+        inference(G,os.path.join(args.input,f),os.path.join(args.output,f))
 
-def createResultLayer(image,name,result):
-    rlBytes=np.uint8(result).tobytes();
-    rl=gimp.Layer(image,name,image.width,image.height,image.active_layer.type,100,NORMAL_MODE)
-    region=rl.get_pixel_rgn(0, 0, rl.width,rl.height,True)
-    region[:,:]=rlBytes
-    image.add_layer(rl,0)
-    gimp.displays_flush()
-
-def genNewImg(name,layer_np):
-    h,w,d=layer_np.shape
-    img=pdb.gimp_image_new(w, h, RGB)
-    display=pdb.gimp_display_new(img)
-
-    rlBytes=np.uint8(layer_np).tobytes();
-    rl=gimp.Layer(img,name,img.width,img.height,RGB,100,NORMAL_MODE)
-    region=rl.get_pixel_rgn(0, 0, rl.width,rl.height,True)
-    region[:,:]=rlBytes
-
-    pdb.gimp_image_insert_layer(img, rl, None, 0)
-    gimp.displays_flush()
-
-def colorize(img, layer) :
-    gimp.progress_init("Coloring " + layer.name + "...")
-
-    imgmat = channelData(layer)
-    cpy=getcolor(imgmat)
-
-    genNewImg(layer.name+'_colored',cpy)
-
-    
-
-register(
-    "colorize",
-    "colorize",
-    "Generate monocular disparity map based on deep learning.",
-    "Kritik Soman",
-    "Your",
-    "2020",
-    "colorize...",
-    "*",      # Alternately use RGB, RGB*, GRAY*, INDEXED etc.
-    [   (PF_IMAGE, "image", "Input image", None),
-        (PF_DRAWABLE, "drawable", "Input drawable", None),
-    ],
-    [],
-    colorize, menu="<Image>/Layer/GIML-ML")
-
-main()
